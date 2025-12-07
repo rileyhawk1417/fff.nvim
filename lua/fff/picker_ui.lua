@@ -792,6 +792,9 @@ function M.update_results_sync()
     M.state.cursor = 1
   end
 
+  -- Reset scroll position when results change
+  M.state.top = 1
+
   M.render_debounced()
 end
 
@@ -814,6 +817,9 @@ function M.update_grep_results()
     else
       M.state.cursor = #results > 0 and 1 or 1
     end
+
+    -- Reset scroll position when results change
+    M.state.top = 1
 
     -- Update status with result count
     local status_text = string.format('%d', metadata.total_matched)
@@ -921,7 +927,25 @@ function M.render_list()
   local debug_enabled = config and config.debug and config.debug.show_scores
   local win_height = vim.api.nvim_win_get_height(M.state.list_win)
   local win_width = vim.api.nvim_win_get_width(M.state.list_win)
-  local display_count = math.min(#items, win_height)
+
+  -- Initialize icon_data and path_data outside the if/else so they're accessible to highlighting code
+  local icon_data = {}
+  local path_data = {}
+
+  -- Calculate scroll offset based on cursor position
+  if #items > 0 then
+    if M.state.cursor < M.state.top then
+      M.state.top = M.state.cursor
+    elseif M.state.cursor >= M.state.top + win_height then
+      M.state.top = M.state.cursor - win_height + 1
+    end
+    -- Ensure top doesn't go below 1 or above max
+    M.state.top = math.max(1, math.min(M.state.top, #items))
+  else
+    M.state.top = 1
+  end
+
+  local display_count = math.min(#items - M.state.top + 1, win_height)
   local empty_lines_needed = 0
 
   local prompt_position = get_prompt_position()
@@ -929,9 +953,9 @@ function M.render_list()
   if #items > 0 then
     if prompt_position == 'bottom' then
       empty_lines_needed = win_height - display_count
-      cursor_line = empty_lines_needed + M.state.cursor
+      cursor_line = empty_lines_needed + (M.state.cursor - M.state.top + 1)
     else
-      cursor_line = M.state.cursor
+      cursor_line = M.state.cursor - M.state.top + 1
     end
     cursor_line = math.max(1, math.min(cursor_line, win_height))
   end
@@ -946,7 +970,8 @@ function M.render_list()
   -- Render differently for grep mode
   if M.state.mode == 'grep' then
     for i = 1, display_count do
-      local item = items[i]
+      local item_idx = M.state.top + i - 1
+      local item = items[item_idx]
       if not item then break end
 
       local icon = '🔍'
@@ -968,11 +993,9 @@ function M.render_list()
     end
   else
     -- Original file picker rendering
-    local icon_data = {}
-    local path_data = {}
-
     for i = 1, display_count do
-      local item = items[i]
+      local item_idx = M.state.top + i - 1
+      local item = items[item_idx]
 
       local icon, icon_hl_group = icons.get_icon_display(item.name, item.extension, false)
       icon_data[i] = { icon, icon_hl_group }
@@ -1045,17 +1068,19 @@ function M.render_list()
     -- Only apply detailed highlighting for file mode (grep mode uses simpler rendering)
     if M.state.mode ~= 'grep' then
       for i = 1, display_count do
-        local item = items[i]
+        local item_idx = M.state.top + i - 1
+        local item = items[item_idx]
+        if not item then break end
 
         local line_idx = empty_lines_needed + i
         local is_cursor_line = line_idx == cursor_line
         local line_content = padded_lines[line_idx]
 
-        if line_content then
+        if line_content and icon_data[i] and path_data[i] then
           local icon, icon_hl_group = unpack(icon_data[i])
           local filename, dir_path = unpack(path_data[i])
 
-        local score = file_picker.get_file_score(i)
+        local score = file_picker.get_file_score(item_idx)
         local is_current_file = score and score.current_file_penalty and score.current_file_penalty < 0
 
         -- Icon highlighting
@@ -1320,6 +1345,12 @@ function M.move_up()
 
   M.state.cursor = math.max(M.state.cursor - 1, 1)
 
+  -- Scroll if cursor goes above visible area
+  local win_height = vim.api.nvim_win_get_height(M.state.list_win)
+  if M.state.cursor < M.state.top then
+    M.state.top = M.state.cursor
+  end
+
   M.render_list()
   M.update_preview()
   M.update_status()
@@ -1330,6 +1361,12 @@ function M.move_down()
   if #M.state.filtered_items == 0 then return end
 
   M.state.cursor = math.min(M.state.cursor + 1, #M.state.filtered_items)
+
+  -- Scroll if cursor goes below visible area
+  local win_height = vim.api.nvim_win_get_height(M.state.list_win)
+  if M.state.cursor >= M.state.top + win_height then
+    M.state.top = M.state.cursor - win_height + 1
+  end
 
   M.render_list()
   M.update_preview()
