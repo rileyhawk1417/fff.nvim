@@ -57,6 +57,33 @@ vim.api.nvim_create_user_command('FFFRefreshGit', function() require('fff').refr
   desc = 'Manually refresh git status for all files',
 })
 
+vim.api.nvim_create_user_command('FFFLiveGrep', function(opts)
+  local fff = require('fff')
+  if opts.args and opts.args ~= '' then
+    -- If argument looks like a directory, use it as base path
+    if vim.fn.isdirectory(opts.args) == 1 then
+      fff.live_grep({ base_path = opts.args })
+    else
+      -- Otherwise treat as search query
+      fff.live_grep({ query = opts.args })
+    end
+  else
+    fff.live_grep()
+  end
+end, {
+  nargs = '?',
+  complete = function(arg_lead)
+    -- Complete with directories
+    local dirs = vim.fn.glob(arg_lead .. '*', false, true)
+    local results = {}
+    for _, dir in ipairs(dirs) do
+      if vim.fn.isdirectory(dir) == 1 then table.insert(results, dir) end
+    end
+    return results
+  end,
+  desc = 'Live grep with FFF (use directory path or search query)',
+})
+
 vim.api.nvim_create_user_command('FFFClearCache', function(opts) require('fff').clear_cache(opts.args) end, {
   nargs = '?',
   complete = function() return { 'all', 'frecency', 'files' } end,

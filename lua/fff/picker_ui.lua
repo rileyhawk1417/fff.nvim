@@ -236,6 +236,7 @@ if preview_config then preview.setup(preview_config) end
 
 M.state = {
   active = false,
+  mode = 'files', -- 'files' or 'grep'
   layout = nil,
   input_win = nil,
   input_buf = nil,
@@ -255,6 +256,7 @@ M.state = {
   location = nil, -- Current location from search results
 
   config = nil,
+  base_path = nil, -- Base path for grep mode
 
   ns_id = nil,
 
@@ -737,7 +739,11 @@ function M.on_input_change()
 
   M.state.query = query
 
-  M.update_results_sync()
+  if M.state.mode == 'grep' then
+    M.update_grep_results()
+  else
+    M.update_results_sync()
+  end
 end
 
 function M.update_results() M.update_results_sync() end
@@ -787,6 +793,38 @@ function M.update_results_sync()
   end
 
   M.render_debounced()
+end
+
+--- Update grep results using live grep module
+function M.update_grep_results()
+  if not M.state.active then return end
+
+  local live_grep = require('fff.live_grep')
+  local base_path = M.state.base_path or vim.fn.getcwd()
+
+  live_grep.start_search(M.state.query, base_path, function(results, metadata)
+    if not M.state.active then return end
+
+    M.state.items = results
+    M.state.filtered_items = results
+
+    local prompt_position = get_prompt_position()
+    if prompt_position == 'bottom' then
+      M.state.cursor = #results > 0 and #results or 1
+    else
+      M.state.cursor = #results > 0 and 1 or 1
+    end
+
+    -- Update status with result count
+    local status_text = string.format('%d', metadata.total_matched)
+    if metadata.max_results_reached then
+      status_text = status_text .. '+'
+    end
+    M.state.last_status_info = status_text
+    M.update_status()
+
+    M.render_debounced()
+  end)
 end
 
 function M.update_preview_debounced()
@@ -905,46 +943,72 @@ function M.render_list()
     end
   end
 
-  local icon_data = {}
-  local path_data = {}
+  -- Render differently for grep mode
+  if M.state.mode == 'grep' then
+    for i = 1, display_count do
+      local item = items[i]
+      if not item then break end
 
-  for i = 1, display_count do
-    local item = items[i]
+      local icon = '🔍'
+      local file_path = item.relative_path or item.path or ''
+      local line_num = item.line or 0
+      local content = item.content or ''
+      local display_text = string.format('%s:%d: %s', file_path, line_num, content)
 
-    local icon, icon_hl_group = icons.get_icon_display(item.name, item.extension, false)
-    icon_data[i] = { icon, icon_hl_group }
-
-    local frecency = ''
-    if debug_enabled then
-      local total_frecency = (item.total_frecency_score or 0)
-      local access_frecency = (item.access_frecency_score or 0)
-      local mod_frecency = (item.modification_frecency_score or 0)
-
-      if total_frecency > 0 then
-        local indicator = ''
-        if mod_frecency >= 6 then
-          indicator = '🔥'
-        elseif access_frecency >= 4 then
-          indicator = '⭐'
-        elseif total_frecency >= 3 then
-          indicator = '✨'
-        elseif total_frecency >= 1 then
-          indicator = '•'
-        end
-        frecency = string.format(' %s%d', indicator, total_frecency)
+      -- Truncate if too long
+      local max_display_width = win_width - 3
+      if vim.fn.strdisplaywidth(display_text) > max_display_width then
+        display_text = vim.fn.strcharpart(display_text, 0, max_display_width - 3) .. '...'
       end
+
+      local line = string.format('%s %s', icon, display_text)
+      local line_len = vim.fn.strdisplaywidth(line)
+      local padding = math.max(0, win_width - line_len + 5)
+      table.insert(padded_lines, line .. string.rep(' ', padding))
     end
+  else
+    -- Original file picker rendering
+    local icon_data = {}
+    local path_data = {}
 
-    local available_width = math.max(max_path_width - #icon - 1 - #frecency, 40)
+    for i = 1, display_count do
+      local item = items[i]
 
-    local filename, dir_path = format_file_display(item, available_width)
-    path_data[i] = { filename, dir_path }
+      local icon, icon_hl_group = icons.get_icon_display(item.name, item.extension, false)
+      icon_data[i] = { icon, icon_hl_group }
 
-    local line = string.format('%s %s %s%s', icon, filename, dir_path, frecency)
+      local frecency = ''
+      if debug_enabled then
+        local total_frecency = (item.total_frecency_score or 0)
+        local access_frecency = (item.access_frecency_score or 0)
+        local mod_frecency = (item.modification_frecency_score or 0)
 
-    local line_len = vim.fn.strdisplaywidth(line)
-    local padding = math.max(0, win_width - line_len + 5)
-    table.insert(padded_lines, line .. string.rep(' ', padding))
+        if total_frecency > 0 then
+          local indicator = ''
+          if mod_frecency >= 6 then
+            indicator = '🔥'
+          elseif access_frecency >= 4 then
+            indicator = '⭐'
+          elseif total_frecency >= 3 then
+            indicator = '✨'
+          elseif total_frecency >= 1 then
+            indicator = '•'
+          end
+          frecency = string.format(' %s%d', indicator, total_frecency)
+        end
+      end
+
+      local available_width = math.max(max_path_width - #icon - 1 - #frecency, 40)
+
+      local filename, dir_path = format_file_display(item, available_width)
+      path_data[i] = { filename, dir_path }
+
+      local line = string.format('%s %s %s%s', icon, filename, dir_path, frecency)
+
+      local line_len = vim.fn.strdisplaywidth(line)
+      local padding = math.max(0, win_width - line_len + 5)
+      table.insert(padded_lines, line .. string.rep(' ', padding))
+    end
   end
 
   vim.api.nvim_buf_set_option(M.state.list_buf, 'modifiable', true)
@@ -978,16 +1042,18 @@ function M.render_list()
       })
     end
 
-    for i = 1, display_count do
-      local item = items[i]
+    -- Only apply detailed highlighting for file mode (grep mode uses simpler rendering)
+    if M.state.mode ~= 'grep' then
+      for i = 1, display_count do
+        local item = items[i]
 
-      local line_idx = empty_lines_needed + i
-      local is_cursor_line = line_idx == cursor_line
-      local line_content = padded_lines[line_idx]
+        local line_idx = empty_lines_needed + i
+        local is_cursor_line = line_idx == cursor_line
+        local line_content = padded_lines[line_idx]
 
-      if line_content then
-        local icon, icon_hl_group = unpack(icon_data[i])
-        local filename, dir_path = unpack(path_data[i])
+        if line_content then
+          local icon, icon_hl_group = unpack(icon_data[i])
+          local filename, dir_path = unpack(path_data[i])
 
         local score = file_picker.get_file_score(i)
         local is_current_file = score and score.current_file_penalty and score.current_file_penalty < 0
@@ -1080,6 +1146,7 @@ function M.render_list()
           )
         end
       end
+    end
     end
   end
 end
@@ -1213,18 +1280,23 @@ function M.update_status(progress)
   if not M.state.active or not M.state.ns_id then return end
   local status_info
 
-  if progress and progress.is_scanning then
-    status_info = string.format('Indexing files %d', progress.scanned_files_count)
+  if M.state.mode == 'grep' then
+    -- For grep mode, use last_status_info if set (updated by update_grep_results)
+    status_info = M.state.last_status_info or '0'
   else
-    local search_metadata = file_picker.get_search_metadata()
-    if #M.state.query < 2 then
-      status_info = string.format('%d', search_metadata.total_files)
+    if progress and progress.is_scanning then
+      status_info = string.format('Indexing files %d', progress.scanned_files_count)
     else
-      status_info = string.format('%d/%d', search_metadata.total_matched, search_metadata.total_files)
+      local search_metadata = file_picker.get_search_metadata()
+      if #M.state.query < 2 then
+        status_info = string.format('%d', search_metadata.total_files)
+      else
+        status_info = string.format('%d/%d', search_metadata.total_matched, search_metadata.total_files)
+      end
     end
   end
 
-  if status_info == M.state.last_status_info then return end
+  if status_info == M.state.last_status_info and M.state.mode ~= 'grep' then return end
 
   M.state.last_status_info = status_info
 
@@ -1332,7 +1404,8 @@ function M.select(action)
   action = action or 'edit'
 
   local relative_path = vim.fn.fnamemodify(item.path, ':.')
-  local location = M.state.location -- Capture location before closing
+  -- For grep mode, use item.location; for files mode, use M.state.location
+  local location = (M.state.mode == 'grep' and item.location) or M.state.location
 
   vim.cmd('stopinsert')
   M.close()
@@ -1368,6 +1441,12 @@ function M.close()
 
   vim.cmd('stopinsert')
   M.state.active = false
+
+  -- Cleanup live grep if in grep mode
+  if M.state.mode == 'grep' then
+    local live_grep = require('fff.live_grep')
+    live_grep.cleanup()
+  end
 
   local windows = {
     M.state.input_win,
@@ -1502,9 +1581,15 @@ local function open_ui_with_state(query, results, location, merged_config, curre
     M.update_preview()
     M.update_status()
   else
-    M.update_results()
-    M.clear_preview()
-    M.update_status()
+    if M.state.mode == 'grep' then
+      M.update_grep_results()
+      M.clear_preview()
+      M.update_status()
+    else
+      M.update_results()
+      M.clear_preview()
+      M.update_status()
+    end
   end
 
   vim.api.nvim_set_current_win(M.state.input_win)
@@ -1521,7 +1606,9 @@ local function open_ui_with_state(query, results, location, merged_config, curre
     vim.cmd('startinsert!')
   end
 
-  M.monitor_scan_progress(0)
+  if M.state.mode ~= 'grep' then
+    M.monitor_scan_progress(0)
+  end
   return true
 end
 
@@ -1568,6 +1655,9 @@ end
 --- @param opts.prompt? string Input prompt text (default: "🪿 ")
 --- @param opts.max_results? number Maximum number of results to display (default: 100)
 --- @param opts.max_threads? number Maximum number of threads for file scanning (default: 4)
+--- @param opts.mode? string Picker mode: 'files' or 'grep' (default: 'files')
+--- @param opts.base_path? string Base path for grep mode (default: opts.cwd or current directory)
+--- @param opts.query? string Initial query for grep mode
 --- @param opts.layout? table Layout configuration
 --- @param opts.layout.width? number|function Window width as ratio (0.0-1.0) or function(terminal_width, terminal_height): number (default: 0.8)
 --- @param opts.layout.height? number|function Window height as ratio (0.0-1.0) or function(terminal_width, terminal_height): number (default: 0.8)
@@ -1577,11 +1667,23 @@ end
 function M.open(opts)
   if M.state.active then return end
 
+  opts = opts or {}
   local merged_config, base_path = initialize_picker(opts)
   if not merged_config then return end
 
-  local current_file_cache = get_current_file_cache(base_path)
-  return open_ui_with_state(nil, nil, nil, merged_config, current_file_cache)
+  -- Set mode and base_path for grep
+  M.state.mode = opts.mode or 'files'
+  M.state.base_path = opts.base_path or base_path
+
+  -- For grep mode, don't initialize file picker
+  if M.state.mode == 'grep' then
+    local current_file_cache = nil
+    local initial_query = opts.query or ''
+    return open_ui_with_state(initial_query, nil, nil, merged_config, current_file_cache)
+  else
+    local current_file_cache = get_current_file_cache(base_path)
+    return open_ui_with_state(nil, nil, nil, merged_config, current_file_cache)
+  end
 end
 
 function M.monitor_scan_progress(iteration)

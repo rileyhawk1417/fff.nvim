@@ -233,4 +233,30 @@ function M.open_file_under_cursor(open_cb)
   end)
 end
 
+--- Start live grep search
+--- @param opts table|nil Optional configuration
+--- @param opts.query string|nil Initial search query
+--- @param opts.base_path string|nil Base path to search in (default: current directory)
+--- @param opts.title string|nil Window title (default: "FFFGrep")
+function M.live_grep(opts)
+  opts = opts or {}
+  local picker_ok, picker_ui = pcall(require, 'fff.picker_ui')
+  if not picker_ok then
+    vim.notify('Failed to load picker UI', vim.log.levels.ERROR)
+    return
+  end
+
+  local base_path = opts.base_path or vim.fn.getcwd()
+  local title = opts.title or 'FFFGrep'
+  local initial_query = opts.query or ''
+
+  -- Open picker UI in grep mode
+  picker_ui.open({
+    mode = 'grep',
+    title = title,
+    base_path = base_path,
+    query = initial_query,
+  })
+end
+
 return M
