@@ -165,6 +165,12 @@ local function init()
       log_file = vim.fn.stdpath('log') .. '/fff.log',
       log_level = 'info',
     },
+    live_grep = {
+      debounce_ms = 120,
+      throttle_ms = 80,
+      max_results = 1000,
+      rg_args = { '--vimgrep', '--no-heading', '--hidden' },
+    },
   }
 
   local migrated_user_config = handle_deprecated_config(config)
